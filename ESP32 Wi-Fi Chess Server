@@ -1,0 +1,895 @@
+#include <WiFi.h>
+#include <WebServer.h>
+
+// ============================================
+// ESP32 Wi-Fi Chess Server (SoftAP)
+// ============================================
+
+const char* AP_SSID = "ESP32-CHESS";
+const char* AP_PASSWORD = "12345678";
+
+WebServer server(80);
+
+char board[8][8];
+bool whiteTurn = true;
+bool gameOver = false;
+String winner = "";
+
+String moveHistory[256];
+int moveCount = 0;
+
+const char INDEX_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>ESP32 Wi-Fi Chess</title>
+	<style>
+		:root {
+			--bg: #f3efe8;
+			--panel: #ffffff;
+			--text: #1f2937;
+			--muted: #6b7280;
+			--accent: #14532d;
+			--accent-2: #22c55e;
+			--danger: #b91c1c;
+			--light: #f0d9b5;
+			--dark: #b58863;
+			--selected: #facc15;
+			--valid: rgba(34, 197, 94, 0.42);
+		}
+
+		* { box-sizing: border-box; }
+		body {
+			margin: 0;
+			font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+			color: var(--text);
+			background:
+				radial-gradient(circle at 20% 10%, rgba(20, 83, 45, 0.12), transparent 30%),
+				radial-gradient(circle at 85% 90%, rgba(180, 83, 9, 0.12), transparent 34%),
+				var(--bg);
+			min-height: 100vh;
+			padding: 14px;
+		}
+
+		.app {
+			max-width: 980px;
+			margin: 0 auto;
+			background: var(--panel);
+			border-radius: 12px;
+			box-shadow: 0 12px 26px rgba(0, 0, 0, 0.12);
+			overflow: hidden;
+			border: 1px solid #e5e7eb;
+		}
+
+		.header {
+			background: #14532d;
+			color: #f0fdf4;
+			padding: 14px 16px;
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			flex-wrap: wrap;
+			gap: 10px;
+		}
+
+		.title {
+			font-size: 20px;
+			font-weight: 700;
+		}
+
+		.status {
+			font-size: 14px;
+			display: flex;
+			gap: 8px;
+			align-items: center;
+		}
+
+		.dot {
+			width: 10px;
+			height: 10px;
+			border-radius: 50%;
+			background: var(--accent-2);
+			box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.25);
+		}
+
+		.content {
+			display: grid;
+			grid-template-columns: 1fr 280px;
+			gap: 16px;
+			padding: 16px;
+		}
+
+		.board-wrap {
+			display: flex;
+			justify-content: center;
+			align-items: center;
+		}
+
+		.board {
+			width: min(88vw, 640px);
+			aspect-ratio: 1 / 1;
+			display: grid;
+			grid-template-columns: repeat(8, 1fr);
+			border: 5px solid #4b2e1a;
+			border-radius: 8px;
+			overflow: hidden;
+			user-select: none;
+			touch-action: manipulation;
+		}
+
+		.sq {
+			position: relative;
+			display: flex;
+			justify-content: center;
+			align-items: center;
+			font-size: clamp(28px, 4.7vw, 44px);
+			cursor: pointer;
+			transition: transform 0.08s ease, outline-color 0.08s ease;
+		}
+
+		.sq.light { background: var(--light); }
+		.sq.dark { background: var(--dark); }
+
+		.sq:hover {
+			outline: 2px solid rgba(20, 83, 45, 0.35);
+			outline-offset: -2px;
+		}
+
+		.sq.selected {
+			outline: 3px solid var(--selected);
+			outline-offset: -3px;
+		}
+
+		.sq.valid::after {
+			content: "";
+			width: 34%;
+			height: 34%;
+			border-radius: 50%;
+			background: var(--valid);
+			position: absolute;
+		}
+
+		.coords {
+			position: absolute;
+			bottom: 2px;
+			right: 4px;
+			font-size: 10px;
+			color: rgba(17, 24, 39, 0.65);
+			pointer-events: none;
+		}
+
+		.side {
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+		}
+
+		.card {
+			border: 1px solid #e5e7eb;
+			border-radius: 8px;
+			padding: 10px;
+			background: #fafafa;
+		}
+
+		.card h3 {
+			margin: 0 0 8px;
+			font-size: 14px;
+			color: #111827;
+		}
+
+		.turn {
+			font-weight: 700;
+			color: #14532d;
+		}
+
+		.message {
+			font-size: 13px;
+			color: var(--muted);
+			min-height: 18px;
+		}
+
+		.history {
+			max-height: 360px;
+			overflow-y: auto;
+			border: 1px solid #d1d5db;
+			border-radius: 6px;
+			background: #fff;
+			padding: 6px;
+			font-size: 13px;
+			line-height: 1.45;
+			white-space: pre-wrap;
+		}
+
+		.controls {
+			display: flex;
+			gap: 8px;
+			flex-wrap: wrap;
+		}
+
+		button {
+			border: none;
+			padding: 9px 12px;
+			border-radius: 7px;
+			font-weight: 700;
+			cursor: pointer;
+			color: white;
+			background: #14532d;
+		}
+
+		button:hover { filter: brightness(1.06); }
+
+		.reset {
+			background: var(--danger);
+		}
+
+		@media (max-width: 860px) {
+			.content {
+				grid-template-columns: 1fr;
+			}
+			.history {
+				max-height: 220px;
+			}
+		}
+	</style>
+</head>
+<body>
+	<div class="app">
+		<div class="header">
+			<div class="title">ESP32 Wi-Fi Chess</div>
+			<div class="status"><span class="dot"></span><span id="conn">Connecting...</span></div>
+		</div>
+
+		<div class="content">
+			<div class="board-wrap">
+				<div class="board" id="board"></div>
+			</div>
+
+			<div class="side">
+				<div class="card">
+					<h3>Current Turn</h3>
+					<div class="turn" id="turn">-</div>
+				</div>
+
+				<div class="card">
+					<h3>Game Status</h3>
+					<div class="message" id="msg">Waiting for state...</div>
+					<div class="controls" style="margin-top: 8px;">
+						<button class="reset" id="resetBtn">Reset Game</button>
+					</div>
+				</div>
+
+				<div class="card">
+					<h3>Move History</h3>
+					<div class="history" id="history">No moves yet.</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<script>
+		const boardEl = document.getElementById('board');
+		const connEl = document.getElementById('conn');
+		const turnEl = document.getElementById('turn');
+		const msgEl = document.getElementById('msg');
+		const historyEl = document.getElementById('history');
+		const resetBtn = document.getElementById('resetBtn');
+
+		const files = ['a','b','c','d','e','f','g','h'];
+		const symbols = {
+			p: '♟', r: '♜', n: '♞', b: '♝', q: '♛', k: '♚',
+			P: '♙', R: '♖', N: '♘', B: '♗', Q: '♕', K: '♔'
+		};
+
+		let gameState = null;
+		let selected = null;
+		let validMoves = [];
+
+		function rcToSquare(r, c) {
+			return files[c] + (8 - r);
+		}
+
+		function squareToRC(sq) {
+			if (!sq || sq.length !== 2) return null;
+			const c = files.indexOf(sq[0]);
+			const rank = parseInt(sq[1], 10);
+			if (c < 0 || rank < 1 || rank > 8) return null;
+			const r = 8 - rank;
+			return { r, c };
+		}
+
+		function inBounds(r, c) {
+			return r >= 0 && r < 8 && c >= 0 && c < 8;
+		}
+
+		function pieceColor(ch) {
+			if (!ch || ch === '.') return '';
+			return ch === ch.toUpperCase() ? 'white' : 'black';
+		}
+
+		function canSelectPiece(piece) {
+			if (!piece || piece === '.' || !gameState) return false;
+			const turnColor = gameState.whiteTurn ? 'white' : 'black';
+			return pieceColor(piece) === turnColor;
+		}
+
+		function pushMoveIfValid(moves, r, c, ownColor) {
+			if (!inBounds(r, c)) return;
+			const target = gameState.board[r][c];
+			const targetColor = pieceColor(target);
+			if (target === '.' || targetColor !== ownColor) moves.push(rcToSquare(r, c));
+		}
+
+		function addSlidingMoves(moves, r, c, ownColor, dirs) {
+			for (const [dr, dc] of dirs) {
+				let nr = r + dr;
+				let nc = c + dc;
+				while (inBounds(nr, nc)) {
+					const target = gameState.board[nr][nc];
+					if (target === '.') {
+						moves.push(rcToSquare(nr, nc));
+					} else {
+						if (pieceColor(target) !== ownColor) moves.push(rcToSquare(nr, nc));
+						break;
+					}
+					nr += dr;
+					nc += dc;
+				}
+			}
+		}
+
+		function computeValidMoves(fromSq) {
+			if (!gameState) return [];
+			const rc = squareToRC(fromSq);
+			if (!rc) return [];
+
+			const { r, c } = rc;
+			const piece = gameState.board[r][c];
+			if (!piece || piece === '.') return [];
+
+			const ownColor = pieceColor(piece);
+			const lower = piece.toLowerCase();
+			const moves = [];
+
+			if (lower === 'p') {
+				const dir = ownColor === 'white' ? -1 : 1;
+				const startRow = ownColor === 'white' ? 6 : 1;
+
+				const oneR = r + dir;
+				if (inBounds(oneR, c) && gameState.board[oneR][c] === '.') {
+					moves.push(rcToSquare(oneR, c));
+					const twoR = r + dir * 2;
+					if (r === startRow && gameState.board[twoR][c] === '.') {
+						moves.push(rcToSquare(twoR, c));
+					}
+				}
+
+				for (const dc of [-1, 1]) {
+					const cr = r + dir;
+					const cc = c + dc;
+					if (!inBounds(cr, cc)) continue;
+					const target = gameState.board[cr][cc];
+					if (target !== '.' && pieceColor(target) !== ownColor) {
+						moves.push(rcToSquare(cr, cc));
+					}
+				}
+			} else if (lower === 'n') {
+				const jumps = [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]];
+				for (const [dr, dc] of jumps) {
+					pushMoveIfValid(moves, r + dr, c + dc, ownColor);
+				}
+			} else if (lower === 'b') {
+				addSlidingMoves(moves, r, c, ownColor, [[-1,-1],[-1,1],[1,-1],[1,1]]);
+			} else if (lower === 'r') {
+				addSlidingMoves(moves, r, c, ownColor, [[-1,0],[1,0],[0,-1],[0,1]]);
+			} else if (lower === 'q') {
+				addSlidingMoves(moves, r, c, ownColor, [[-1,-1],[-1,1],[1,-1],[1,1],[-1,0],[1,0],[0,-1],[0,1]]);
+			} else if (lower === 'k') {
+				for (let dr = -1; dr <= 1; dr++) {
+					for (let dc = -1; dc <= 1; dc++) {
+						if (dr === 0 && dc === 0) continue;
+						pushMoveIfValid(moves, r + dr, c + dc, ownColor);
+					}
+				}
+			}
+
+			return moves;
+		}
+
+		function renderBoard() {
+			if (!gameState) return;
+			boardEl.innerHTML = '';
+
+			for (let r = 0; r < 8; r++) {
+				for (let c = 0; c < 8; c++) {
+					const sq = document.createElement('div');
+					const id = rcToSquare(r, c);
+					const piece = gameState.board[r][c];
+					const isLight = (r + c) % 2 === 0;
+
+					sq.className = `sq ${isLight ? 'light' : 'dark'}`;
+					sq.dataset.square = id;
+					sq.textContent = symbols[piece] || '';
+
+					if (selected === id) sq.classList.add('selected');
+					if (validMoves.includes(id)) sq.classList.add('valid');
+
+					const coord = document.createElement('span');
+					coord.className = 'coords';
+					coord.textContent = id;
+					sq.appendChild(coord);
+
+					sq.addEventListener('click', () => onSquareClick(id));
+					boardEl.appendChild(sq);
+				}
+			}
+
+			turnEl.textContent = gameState.whiteTurn ? 'White to move' : 'Black to move';
+
+			if (gameState.gameOver) {
+				msgEl.textContent = `Game Over. Winner: ${gameState.winner || 'Unknown'}`;
+			} else {
+				msgEl.textContent = selected ? `Selected ${selected}` : 'Select a piece to move';
+			}
+
+			if (gameState.history && gameState.history.length) {
+				historyEl.textContent = gameState.history.map((m, i) => `${i + 1}. ${m}`).join('\n');
+				historyEl.scrollTop = historyEl.scrollHeight;
+			} else {
+				historyEl.textContent = 'No moves yet.';
+			}
+		}
+
+		async function fetchState(silent = false) {
+			try {
+				const res = await fetch('/state', { cache: 'no-store' });
+				if (!res.ok) throw new Error('State request failed');
+				const data = await res.json();
+				gameState = data;
+				connEl.textContent = 'Connected to ESP32';
+
+				if (selected && !computeValidMoves(selected).length) {
+					validMoves = [];
+				}
+
+				renderBoard();
+			} catch (err) {
+				connEl.textContent = 'Disconnected';
+				if (!silent) msgEl.textContent = 'Cannot reach ESP32 server';
+			}
+		}
+
+		async function sendMove(from, to) {
+			try {
+				const res = await fetch(`/move?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, {
+					method: 'GET',
+					cache: 'no-store'
+				});
+				const data = await res.json();
+				if (!res.ok || !data.ok) {
+					msgEl.textContent = data.error || 'Illegal move';
+				} else {
+					msgEl.textContent = `Moved ${from} -> ${to}`;
+				}
+			} catch (err) {
+				msgEl.textContent = 'Move request failed';
+			}
+			selected = null;
+			validMoves = [];
+			await fetchState(true);
+		}
+
+		function onSquareClick(square) {
+			if (!gameState || gameState.gameOver) return;
+			const rc = squareToRC(square);
+			if (!rc) return;
+
+			const piece = gameState.board[rc.r][rc.c];
+
+			if (!selected) {
+				if (canSelectPiece(piece)) {
+					selected = square;
+					validMoves = computeValidMoves(square);
+				}
+			} else {
+				if (selected === square) {
+					selected = null;
+					validMoves = [];
+				} else if (validMoves.includes(square)) {
+					const from = selected;
+					sendMove(from, square);
+					return;
+				} else if (canSelectPiece(piece)) {
+					selected = square;
+					validMoves = computeValidMoves(square);
+				} else {
+					selected = null;
+					validMoves = [];
+				}
+			}
+
+			renderBoard();
+		}
+
+		resetBtn.addEventListener('click', async () => {
+			try {
+				const res = await fetch('/reset', { method: 'GET', cache: 'no-store' });
+				const data = await res.json();
+				msgEl.textContent = data.ok ? 'Game reset.' : 'Reset failed.';
+			} catch (err) {
+				msgEl.textContent = 'Reset request failed';
+			}
+			selected = null;
+			validMoves = [];
+			await fetchState(true);
+		});
+
+		fetchState();
+		setInterval(() => fetchState(true), 700);
+	</script>
+</body>
+</html>
+)rawliteral";
+
+bool inBounds(int r, int c) {
+	return r >= 0 && r < 8 && c >= 0 && c < 8;
+}
+
+bool isUpperPiece(char p) {
+	return p >= 'A' && p <= 'Z';
+}
+
+bool isLowerPiece(char p) {
+	return p >= 'a' && p <= 'z';
+}
+
+bool isEmptySquare(char p) {
+	return p == '.';
+}
+
+bool isWhitePiece(char p) {
+	return isUpperPiece(p);
+}
+
+bool isBlackPiece(char p) {
+	return isLowerPiece(p);
+}
+
+bool isOwnPiece(char p, bool white) {
+	if (isEmptySquare(p)) return false;
+	return white ? isWhitePiece(p) : isBlackPiece(p);
+}
+
+bool isEnemyPiece(char p, bool white) {
+	if (isEmptySquare(p)) return false;
+	return white ? isBlackPiece(p) : isWhitePiece(p);
+}
+
+String squareName(int row, int col) {
+	char file = 'a' + col;
+	char rank = '8' - row;
+	String out;
+	out += file;
+	out += rank;
+	return out;
+}
+
+bool parseSquare(const String& s, int& row, int& col) {
+	if (s.length() != 2) return false;
+	char file = tolower(s[0]);
+	char rank = s[1];
+
+	if (file < 'a' || file > 'h') return false;
+	if (rank < '1' || rank > '8') return false;
+
+	col = file - 'a';
+	row = 8 - (rank - '0');
+	return true;
+}
+
+bool pathClearStraight(int r1, int c1, int r2, int c2) {
+	int dr = (r2 > r1) ? 1 : (r2 < r1 ? -1 : 0);
+	int dc = (c2 > c1) ? 1 : (c2 < c1 ? -1 : 0);
+
+	int r = r1 + dr;
+	int c = c1 + dc;
+	while (r != r2 || c != c2) {
+		if (!isEmptySquare(board[r][c])) return false;
+		r += dr;
+		c += dc;
+	}
+	return true;
+}
+
+bool validatePawnMove(int fr, int fc, int tr, int tc, bool white) {
+	int dir = white ? -1 : 1;
+	int startRow = white ? 6 : 1;
+
+	if (fc == tc) {
+		if (tr == fr + dir && isEmptySquare(board[tr][tc])) return true;
+		if (fr == startRow && tr == fr + 2 * dir && isEmptySquare(board[fr + dir][fc]) && isEmptySquare(board[tr][tc])) {
+			return true;
+		}
+		return false;
+	}
+
+	if (abs(tc - fc) == 1 && tr == fr + dir && isEnemyPiece(board[tr][tc], white)) {
+		return true;
+	}
+
+	return false;
+}
+
+bool validateKnightMove(int fr, int fc, int tr, int tc) {
+	int dr = abs(tr - fr);
+	int dc = abs(tc - fc);
+	return (dr == 2 && dc == 1) || (dr == 1 && dc == 2);
+}
+
+bool validateBishopMove(int fr, int fc, int tr, int tc) {
+	int dr = abs(tr - fr);
+	int dc = abs(tc - fc);
+	if (dr != dc) return false;
+	return pathClearStraight(fr, fc, tr, tc);
+}
+
+bool validateRookMove(int fr, int fc, int tr, int tc) {
+	if (fr != tr && fc != tc) return false;
+	return pathClearStraight(fr, fc, tr, tc);
+}
+
+bool validateQueenMove(int fr, int fc, int tr, int tc) {
+	int dr = abs(tr - fr);
+	int dc = abs(tc - fc);
+	if (dr == dc) return pathClearStraight(fr, fc, tr, tc);
+	if (fr == tr || fc == tc) return pathClearStraight(fr, fc, tr, tc);
+	return false;
+}
+
+bool validateKingMove(int fr, int fc, int tr, int tc) {
+	int dr = abs(tr - fr);
+	int dc = abs(tc - fc);
+	return dr <= 1 && dc <= 1;
+}
+
+bool validateMove(int fr, int fc, int tr, int tc, String& errorOut) {
+	if (!inBounds(fr, fc) || !inBounds(tr, tc)) {
+		errorOut = "Out of bounds";
+		return false;
+	}
+
+	if (fr == tr && fc == tc) {
+		errorOut = "Source and destination are same";
+		return false;
+	}
+
+	char piece = board[fr][fc];
+	if (isEmptySquare(piece)) {
+		errorOut = "No piece at source";
+		return false;
+	}
+
+	bool movingWhite = isWhitePiece(piece);
+	if (movingWhite != whiteTurn) {
+		errorOut = "Not your turn";
+		return false;
+	}
+
+	char target = board[tr][tc];
+	if (isOwnPiece(target, movingWhite)) {
+		errorOut = "Cannot capture own piece";
+		return false;
+	}
+
+	char lower = tolower(piece);
+	bool valid = false;
+
+	if (lower == 'p') valid = validatePawnMove(fr, fc, tr, tc, movingWhite);
+	else if (lower == 'n') valid = validateKnightMove(fr, fc, tr, tc);
+	else if (lower == 'b') valid = validateBishopMove(fr, fc, tr, tc);
+	else if (lower == 'r') valid = validateRookMove(fr, fc, tr, tc);
+	else if (lower == 'q') valid = validateQueenMove(fr, fc, tr, tc);
+	else if (lower == 'k') valid = validateKingMove(fr, fc, tr, tc);
+
+	if (!valid) {
+		errorOut = "Illegal move for selected piece";
+		return false;
+	}
+
+	return true;
+}
+
+bool hasKing(bool white) {
+	char k = white ? 'K' : 'k';
+	for (int r = 0; r < 8; r++) {
+		for (int c = 0; c < 8; c++) {
+			if (board[r][c] == k) return true;
+		}
+	}
+	return false;
+}
+
+void pushMoveHistory(const String& entry) {
+	if (moveCount < 256) {
+		moveHistory[moveCount++] = entry;
+		return;
+	}
+
+	for (int i = 1; i < 256; i++) {
+		moveHistory[i - 1] = moveHistory[i];
+	}
+	moveHistory[255] = entry;
+}
+
+void resetBoard() {
+	const char* initial[8] = {
+		"rnbqkbnr",
+		"pppppppp",
+		"........",
+		"........",
+		"........",
+		"........",
+		"PPPPPPPP",
+		"RNBQKBNR"
+	};
+
+	for (int r = 0; r < 8; r++) {
+		for (int c = 0; c < 8; c++) {
+			board[r][c] = initial[r][c];
+		}
+	}
+
+	whiteTurn = true;
+	gameOver = false;
+	winner = "";
+	moveCount = 0;
+}
+
+String boardToJson() {
+	String json;
+	json.reserve(1800);
+
+	json += "{";
+	json += "\"board\":[";
+	for (int r = 0; r < 8; r++) {
+		json += "\"";
+		for (int c = 0; c < 8; c++) {
+			json += board[r][c];
+		}
+		json += "\"";
+		if (r < 7) json += ",";
+	}
+	json += "],";
+
+	json += "\"whiteTurn\":";
+	json += whiteTurn ? "true" : "false";
+	json += ",";
+
+	json += "\"gameOver\":";
+	json += gameOver ? "true" : "false";
+	json += ",";
+
+	json += "\"winner\":\"";
+	json += winner;
+	json += "\",";
+
+	json += "\"history\":[";
+	for (int i = 0; i < moveCount; i++) {
+		String e = moveHistory[i];
+		e.replace("\\", "\\\\");
+		e.replace("\"", "\\\"");
+		json += "\"";
+		json += e;
+		json += "\"";
+		if (i < moveCount - 1) json += ",";
+	}
+	json += "]";
+
+	json += "}";
+	return json;
+}
+
+void handleRoot() {
+	server.send_P(200, "text/html", INDEX_HTML);
+}
+
+void handleState() {
+	server.send(200, "application/json", boardToJson());
+}
+
+void handleMove() {
+	if (gameOver) {
+		server.send(400, "application/json", "{\"ok\":false,\"error\":\"Game over. Reset to play again\"}");
+		return;
+	}
+
+	if (!server.hasArg("from") || !server.hasArg("to")) {
+		server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing from/to parameters\"}");
+		return;
+	}
+
+	String from = server.arg("from");
+	String to = server.arg("to");
+
+	int fr, fc, tr, tc;
+	if (!parseSquare(from, fr, fc) || !parseSquare(to, tr, tc)) {
+		server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid square format\"}");
+		return;
+	}
+
+	String err;
+	if (!validateMove(fr, fc, tr, tc, err)) {
+		String resp = "{\"ok\":false,\"error\":\"" + err + "\"}";
+		server.send(400, "application/json", resp);
+		return;
+	}
+
+	char moving = board[fr][fc];
+	char captured = board[tr][tc];
+	board[tr][tc] = moving;
+	board[fr][fc] = '.';
+
+	// Auto-promote pawns to queen to keep logic compact.
+	if (moving == 'P' && tr == 0) board[tr][tc] = 'Q';
+	if (moving == 'p' && tr == 7) board[tr][tc] = 'q';
+
+	String moveText = String(whiteTurn ? "W: " : "B: ") + from + "->" + to;
+	if (!isEmptySquare(captured)) {
+		moveText += " x";
+		moveText += captured;
+	}
+	pushMoveHistory(moveText);
+
+	if (!hasKing(true)) {
+		gameOver = true;
+		winner = "Black";
+		pushMoveHistory("Black wins (white king captured)");
+	} else if (!hasKing(false)) {
+		gameOver = true;
+		winner = "White";
+		pushMoveHistory("White wins (black king captured)");
+	} else {
+		whiteTurn = !whiteTurn;
+	}
+
+	server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handleReset() {
+	resetBoard();
+	server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void setup() {
+	Serial.begin(115200);
+	delay(150);
+
+	resetBoard();
+
+	WiFi.mode(WIFI_AP);
+	bool ok = WiFi.softAP(AP_SSID, AP_PASSWORD);
+
+	Serial.println();
+	Serial.println("===== ESP32 CHESS AP =====");
+	Serial.printf("SoftAP start: %s\n", ok ? "OK" : "FAILED");
+	Serial.printf("SSID: %s\n", AP_SSID);
+	Serial.printf("PASS: %s\n", AP_PASSWORD);
+	Serial.print("IP: ");
+	Serial.println(WiFi.softAPIP());
+
+	server.on("/", HTTP_GET, handleRoot);
+	server.on("/state", HTTP_GET, handleState);
+	server.on("/move", HTTP_GET, handleMove);
+	server.on("/reset", HTTP_GET, handleReset);
+	server.onNotFound([]() {
+		server.send(404, "text/plain", "Not found");
+	});
+
+	server.begin();
+	Serial.println("HTTP server started on port 80");
+}
+
+void loop() {
+	server.handleClient();
+}
